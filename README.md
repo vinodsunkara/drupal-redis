@@ -1,10 +1,5 @@
-# Drupal-nginx-php Docker 
-This is a Drupal Docker image which can run on both 
- - [Azure Web App on Linux](https://docs.microsoft.com/en-us/azure/app-service-web/app-service-linux-intro) 
- - [Drupal on Linux Web App With MySQL](https://ms.portal.azure.com/#create/Drupal.Drupalonlinux )
- - Your Docker engines's host.
-
-You can find it in Docker hub here [https://hub.docker.com/r/appsvcorg/drupal-nginx-fpm/](https://hub.docker.com/r/appsvcorg/drupal-nginx-fpm/)
+# Drupal-nginx-php Docker with Redis
+This is a Drupal Docker image with redis 
 
 # Components
 This docker image currently contains the following components:
@@ -17,42 +12,61 @@ This docker image currently contains the following components:
 7. MariaDB ( 10.1.26/if using Local Database )
 8. Phpmyadmin ( 4.7.7/if using Local Database )
 
-# How to Deploy to Azure 
-1. Create a Web App for Containers, set Docker container as ```appsvcorg/drupal-nginx-fpm:0.2``` 
-   OR: Create a Drupal on Linux Web App With MySQL.
-2. Update App Setting ```WEBSITES_ENABLE_APP_SERVICE_STORAGE``` = true 
->If the ```WEBSITES_ENABLE_APP_SERVICE_STORAGE``` setting is false, the /home/ directory will not be shared across scale instances, and files that are written there will not be persisted across restarts.
-3. Add one App Setting ```WEBSITES_CONTAINER_START_TIME_LIMIT``` = 600
-4. Browse your site and wait almost 10 mins, you will see install page of Drupal.
-5. Complete Drupal install.
+How to build a custom container with Drupal & Redis
 
-### How to configure to use Local Database with web app 
-1. Create a Web App for Containers 
-2. Update App Setting ```WEBSITES_ENABLE_APP_SERVICE_STORAGE``` = true 
-3. Add new App Settings 
 
-Name | Default Value
----- | -------------
-DATABASE_TYPE | local
-DATABASE_USERNAME | some-string
-DATABASE_PASSWORD | some-string
-**Note: We create a database "azurelocaldb" when using local mysql . Hence use this name when setting up the app **
+	1. Download the Azure App service default image to your local
+	https://github.com/Azure-App-Service/drupal-nginx-fpm
+	
+	2. Edit the docker file and add the below lines to install redis
+	
+	RUN set -ex \
+	    && apt-get update \
+		&& apt-get install -y -V --no-install-recommends redis-server 
+	
+	RUN pecl install -o -f redis \
+	    &&  rm -rf /tmp/pear
 
-4. Browse http://[website]/phpmyadmin 
+	3. Add the below command on entrypoint.sh to unzip redis and build the extension 
 
-# Limitations
-- Must include  App Setting ```WEBSITES_ENABLE_APP_SERVICE_STORAGE``` = true  since we need files to be persisted. Do not use local storage for Drupal. You can use local storage for transient data or cached data say /tmp folder.
-- Pull and run this image need some time, You can include App Setting ```WEBSITES_CONTAINER_START_TIME_LIMIT``` to specify the time in seconds as need, Default is 240 and max is 600.
 
-## Change Log
-- **Version 0.2** 
-  1. Supports local MySQL.
-  2. Create default database - azurelocaldb.(You need set DATABASE_TYPE to **"local"**)
-  3. Considering security, please set database authentication info on [*"App settings"*](#How-to-configure-to-use-Local-Database-with-web-app) when enable **"local"** mode.   
-     Note: the credentials below is also used by phpMyAdmin.
-      -  DATABASE_USERNAME | <*your phpMyAdmin user*>
-      -  DATABASE_PASSWORD | <*your phpMyAdmin password*>
-  4. Fixed Restart block issue.
+	setup_redis_extension(){
+	    #unzip phpredis and build the extension
+	
+	   echo "extension=redis.so" > /etc/php/7.0/mods-available/redis.ini
+	   ln -sf /etc/php/7.0/mods-available/redis.ini /etc/php/7.0/fpm/conf.d/20-redis.ini
+	   ln -sf /etc/php/7.0/mods-available/redis.ini /etc/php/7.0/cli/conf.d/20-redis.ini
+	
+	    echo "\$conf['redis_cache_socket'] = '/tmp/redis.sock';" >> "$DRUPAL_HOME/sites/default/settings.php"
+	    echo "\$settings['redis.connection']['base'] = 1;" >> "$DRUPAL_HOME/sites/default/settings.php"
+	    echo "\$settings['cache']['default'] = 'cache.backend.redis';" >> "$DRUPAL_HOME/sites/default/settings.php"
+	    echo "\$settings['redis.connection']['host'] = '127.0.0.1';" >> "$DRUPAL_HOME/sites/default/settings.php"
+	    echo "\$settings['cache']['default'] = 'cache.backend.redis';" >> "$DRUPAL_HOME/sites/default/settings.php"
+	}
 
-# How to Contribute
-If you have feedback please create an issue but **do not send Pull requests** to these images since any changes to the images needs to tested before it is pushed to production. 
+	4. Now build the image with 
+	docker build -t <docker hub ID>/drupal-redis:0.1 .
+	
+	5. Push the image to docker hub
+	Docker push <docker hub ID>/drupal-redis:0.1>
+	
+	6. Create a new web app for container on Azure portal and select the configuration container with the docker hub
+	7. Install the Drupal image with database configuration
+	8. Add the below to settings.php under /home/site/wwwroot/sites/default/settings.php file 
+	
+	$conf['redis_client_interface'] = 'Predis';
+	$conf['redis_client_host'] = 'hostname';
+	$conf['redis_client_port'] = port;
+	$conf['redis_client_password'] = 'password';
+	$conf['lock_inc'] = 'sites/all/modules/contrib/redis/redis.lock.inc';
+	$conf['cache_backends'][] = 'sites/all/modules/contrib/redis/redis.autoload.inc';
+	$conf['cache_default_class'] = 'Redis_Cache';
+	
+	9. If you are getting an access denied error while accessing the  settings.php file SSH to the container and modify the file permissions
+	chmod -R 777 settings.php
+	
+	10. Replace Hostname with your Database host name
+	11. Replace port with your database port
+	12. Replace password with your Database password
+	13. Save the settings.php file
+	14. To check if redis is working or not, SSH to the container and type redis-cli or redis-cli ping
